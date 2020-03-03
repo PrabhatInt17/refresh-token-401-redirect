@@ -19,7 +19,7 @@ private refreshTokenSubject = new Subject<Boolean>();
       },
       err => {
         // handling scenrio where user manually enters code value in url
-        // in this case code value will not be found in IDP
+       
         if (err.status === 404) {
           
         }
