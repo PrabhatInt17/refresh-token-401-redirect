@@ -13,59 +13,78 @@ import { finalize, tap } from 'rxjs/operators';
   providedIn: 'root'
 })
 export class RefreshTokenInterceptorService implements HttpInterceptor {
-  pendingRequestsCount = 0;
-  refreshTokenInProgress = false;
 
-  authService;
+  //https://stackoverflow.com/questions/45202208/angular-4-interceptor-retry-requests-after-token-refresh
+  refreshTokenInProgress = false;
+  currentAccessToken?: any;
+  previousAccessToken?: any;
 
   tokenRefreshedSource = new Subject();
   tokenRefreshed$ = this.tokenRefreshedSource.asObservable();
 
-  constructor(
-    private authenticationSvc: AuthenticationService,
-    private injector: Injector
-  ) {
-    this.authenticationSvc.appTokenInitNotifier.subscribe(action => {
-      if (action) {
-        console.log('current pending requests', this.pendingRequestsCount);
-        this.refreshTokenInProgress = true;
-      } else {
-        this.refreshTokenInProgress = false;
-      }
-    });
+  constructor(private authenticationSvc: AuthenticationService) {}
+
+  private checkError(error: HttpErrorResponse): boolean {
+    return error.status == 401 && error.error.error == 'Unauthorized';
   }
 
-  refreshToken() {
-    if (this.refreshTokenInProgress) {
-      return new Observable(observer => {
-        this.authenticationSvc.appTokenInitNotifier.subscribe(action => {
-          if (!action) {
-            observer.next();
-            observer.complete();
-          }
-        });
-      });
-    }
+  private ifFailedDuringTokenRefresh(req): boolean {
+    
+    return (
+      this.previousAccessToken &&
+      this.currentAccessToken &&
+      req.headers.headers
+        .get('authorization')[0]
+        .includes(this.previousAccessToken) 
+    );
+  }
+
+  updateHeader(req) {
+    const authToken = this.authenticationSvc.getToken();
+    req = req.clone({
+      headers: req.headers.set('authorization', `Bearer ${authToken}`)
+    });
+    return req;
   }
 
   intercept(
-    request: HttpRequest<any>,
+    req: HttpRequest<any>,
     next: HttpHandler
   ): Observable<HttpEvent<any>> {
-    this.authService = this.injector.get(AuthenticationService);
-
-    return next.handle(request).catch(error => {
-      if (error.status === 401) {
-        return this.refreshToken()
-          .switchMap(() => {
-            return next.handle(request);
-          })
-          .catch(() => {
-            return Observable.empty();
-          });
-      }
-
-      return Observable.throw(error);
-    });
+    if (req.url.endsWith("/token-refresh")) {
+      this.refreshTokenInProgress = true;
+      this.currentAccessToken = this.authenticationSvc.getToken();
+      return next.handle(req).pipe(
+        finalize(() => {
+          this.refreshTokenInProgress = false;
+          this.tokenRefreshedSource.next();
+          this.previousAccessToken = this.currentAccessToken;
+          this.currentAccessToken = this.authenticationSvc.getToken();
+        })
+      );
+    } else {
+      return next.handle(req).pipe(
+        catchError((error, caught) => {
+          if (error instanceof HttpErrorResponse) {
+            if (
+              this.checkError(error) &&
+              !this.refreshTokenInProgress &&
+              this.ifFailedDuringTokenRefresh(req)
+            ) {
+              const cloneCopy = this.updateHeader(req);
+              return next.handle(cloneCopy);
+            } else if (this.refreshTokenInProgress && this.checkError(error)) {
+              this.tokenRefreshed$.subscribe(() => {
+                const cloneCopy = this.updateHeader(req);
+                return next.handle(cloneCopy);
+              });
+            } else {
+              return throwError(error);
+            }
+          }
+          return caught;
+        })
+      );
+    }
   }
 }
