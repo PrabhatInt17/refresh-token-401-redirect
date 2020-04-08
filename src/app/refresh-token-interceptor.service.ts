@@ -19,9 +19,6 @@ export class RefreshTokenInterceptorService implements HttpInterceptor {
   currentAccessToken?: any;
   previousAccessToken?: any;
 
-  tokenRefreshedSource = new Subject();
-  tokenRefreshed$ = this.tokenRefreshedSource.asObservable();
-
   constructor(private authenticationSvc: AuthenticationService) {}
 
   private checkError(error: HttpErrorResponse): boolean {
@@ -57,7 +54,6 @@ export class RefreshTokenInterceptorService implements HttpInterceptor {
       return next.handle(req).pipe(
         finalize(() => {
           this.refreshTokenInProgress = false;
-          this.tokenRefreshedSource.next();
           this.previousAccessToken = this.currentAccessToken;
           this.currentAccessToken = this.authenticationSvc.getToken();
         })
@@ -74,15 +70,14 @@ export class RefreshTokenInterceptorService implements HttpInterceptor {
               const cloneCopy = this.updateHeader(req);
               return next.handle(cloneCopy);
             } else if (this.refreshTokenInProgress && this.checkError(error)) {
-              this.tokenRefreshed$.subscribe(() => {
-                const cloneCopy = this.updateHeader(req);
-                return next.handle(cloneCopy);
-              });
+              return caught; //retry
             } else {
               return throwError(error);
             }
+          } else {
+            return throwError(error);
           }
-          return caught;
+         
         })
       );
     }
